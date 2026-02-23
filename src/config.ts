@@ -13,7 +13,7 @@ const DEFAULT_CONFIG: MementoConfig = {
     port: 6380,
   },
   ollama: {
-    host: 'http://127.0.0.1:11434',
+    host: 'http://127.0.0.1:11435',
     model: 'nomic-embed-text',
   },
   search: {
