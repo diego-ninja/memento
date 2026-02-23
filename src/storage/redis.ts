@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import type { Memory } from '../types.js';
 
 const EMBEDDING_DIM = 768;
