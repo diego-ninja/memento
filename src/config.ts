@@ -10,7 +10,7 @@ const DEFAULT_CONFIG: MementoConfig = {
   dataDir: MEMENTO_DIR,
   redis: {
     host: '127.0.0.1',
-    port: 6379,
+    port: 6380,
   },
   ollama: {
     host: 'http://127.0.0.1:11434',

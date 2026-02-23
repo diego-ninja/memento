@@ -1,8 +1,11 @@
-.PHONY: setup install-ollama install-redis start stop status build dev test clean
+.PHONY: setup install-ollama start stop status build dev test clean
+
+REDIS_PORT := 6380
 
 # ── Setup ───────────────────────────────────────────────
-setup: install-ollama install-redis
+setup: install-ollama
 	npm install
+	docker compose up -d
 	@echo "✔ Memento setup complete. Run 'make start' to launch services."
 
 install-ollama:
@@ -15,34 +18,25 @@ install-ollama:
 	@echo "Pulling nomic-embed-text model..."
 	ollama pull nomic-embed-text
 
-install-redis:
-	@if ! command -v redis-server &> /dev/null; then \
-		echo "Installing Redis Stack (includes RediSearch)..."; \
-		brew tap redis-stack/redis-stack; \
-		brew install redis-stack; \
-	else \
-		echo "Redis already installed"; \
-	fi
-
 # ── Services ────────────────────────────────────────────
 start:
-	@echo "Starting Redis Stack..."
-	@redis-stack-server --daemonize yes 2>/dev/null || redis-server --daemonize yes --loadmodule $$(brew --prefix)/lib/rejson.so --loadmodule $$(brew --prefix)/lib/redisearch.so 2>/dev/null || echo "Redis might already be running"
+	@echo "Starting Redis Stack (docker)..."
+	@docker compose up -d
 	@echo "Starting Ollama..."
 	@ollama serve &>/dev/null & disown 2>/dev/null || echo "Ollama might already be running"
 	@sleep 1
 	@make status
 
 stop:
-	@echo "Stopping Redis..."
-	@redis-cli shutdown 2>/dev/null || echo "Redis not running"
+	@echo "Stopping Redis (docker)..."
+	@docker compose down
 	@echo "Stopping Ollama..."
 	@pkill -f "ollama serve" 2>/dev/null || echo "Ollama not running"
 	@echo "Services stopped."
 
 status:
 	@echo "── Service Status ──"
-	@redis-cli ping 2>/dev/null && echo "Redis:  ✔ running" || echo "Redis:  ✘ stopped"
+	@docker compose ps --format '{{.Service}}: {{.Status}}' 2>/dev/null | grep redis || echo "Redis:  ✘ stopped"
 	@curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo "Ollama: ✔ running" || echo "Ollama: ✘ stopped"
 	@echo ""
 
