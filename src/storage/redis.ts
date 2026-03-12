@@ -25,7 +25,19 @@ export class RedisStorage {
 
   private async ensureIndex(): Promise<void> {
     try {
-      await this.client.call('FT.INFO', this.indexName);
+      const info = await this.client.call('FT.INFO', this.indexName) as any[];
+      const attrIdx = info.indexOf('attributes');
+      if (attrIdx >= 0) {
+        const attrs = info[attrIdx + 1] as any[];
+        const fieldNames = attrs.map((a: any[]) => {
+          const nameIdx = a.indexOf('identifier');
+          return nameIdx >= 0 ? String(a[nameIdx + 1]) : '';
+        });
+        if (!fieldNames.includes('is_core')) {
+          await this.client.call('FT.DROPINDEX', this.indexName);
+          throw new Error('reindex needed');
+        }
+      }
     } catch {
       await this.client.call(
         'FT.CREATE', this.indexName,
@@ -40,6 +52,9 @@ export class RedisStorage {
         'timestamp', 'NUMERIC', 'SORTABLE',
         'session_id', 'TAG',
         'supersedes', 'TAG',
+        'is_core', 'TAG',
+        'recall_count', 'NUMERIC', 'SORTABLE',
+        'last_recalled', 'NUMERIC', 'SORTABLE',
         'embedding', 'VECTOR', 'HNSW', '6',
           'TYPE', 'FLOAT32',
           'DIM', String(EMBEDDING_DIM),
@@ -61,6 +76,9 @@ export class RedisStorage {
       timestamp: String(memory.timestamp),
       session_id: memory.sessionId,
       supersedes: memory.supersedes ?? '',
+      is_core: memory.isCore ? '1' : '0',
+      recall_count: String(memory.recallCount),
+      last_recalled: String(memory.lastRecalled),
       embedding: embeddingBuffer,
     });
   }
@@ -70,6 +88,37 @@ export class RedisStorage {
     const data = await this.client.hgetallBuffer(key);
     if (!data || Object.keys(data).length === 0) return undefined;
     return this.hashToMemory(id, data);
+  }
+
+  async getCoreMemories(): Promise<Memory[]> {
+    const results = await this.client.call(
+      'FT.SEARCH', this.indexName,
+      '@is_core:{1}',
+      'SORTBY', 'timestamp', 'DESC',
+      'LIMIT', '0', '100',
+    ) as any[];
+    return this.parseSearchResults(results);
+  }
+
+  async incrementRecallCount(id: string): Promise<void> {
+    const key = `${this.prefix}${id}`;
+    await this.client.call('HINCRBY', key, 'recall_count', '1');
+    await this.client.hset(key, { last_recalled: String(Date.now()) });
+  }
+
+  async setCore(id: string, isCore: boolean): Promise<void> {
+    const key = `${this.prefix}${id}`;
+    await this.client.hset(key, { is_core: isCore ? '1' : '0' });
+  }
+
+  async updateContent(id: string, content: string, embedding: number[]): Promise<void> {
+    const key = `${this.prefix}${id}`;
+    const embeddingBuffer = Buffer.from(new Float32Array(embedding).buffer);
+    await this.client.hset(key, {
+      content,
+      embedding: embeddingBuffer,
+      timestamp: String(Date.now()),
+    });
   }
 
   async searchText(query: string, limit: number = 20): Promise<Memory[]> {
@@ -108,6 +157,10 @@ export class RedisStorage {
       'DIALECT', '2',
     ) as any[];
     return this.parseSearchResults(results);
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.client.del(`${this.prefix}${id}`);
   }
 
   async flush(): Promise<void> {
@@ -165,6 +218,9 @@ export class RedisStorage {
       embedding,
       sessionId: str('session_id'),
       supersedes: str('supersedes') || undefined,
+      isCore: str('is_core') === '1',
+      recallCount: Number(str('recall_count')) || 0,
+      lastRecalled: Number(str('last_recalled')) || 0,
     };
   }
 
@@ -181,6 +237,9 @@ export class RedisStorage {
       embedding: [],
       sessionId: str('session_id'),
       supersedes: str('supersedes') || undefined,
+      isCore: str('is_core') === '1',
+      recallCount: Number(str('recall_count')) || 0,
+      lastRecalled: Number(str('last_recalled')) || 0,
     };
   }
 }

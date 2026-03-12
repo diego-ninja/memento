@@ -29,6 +29,11 @@ export class SyncStorage {
     await this.redis.store(memory);
   }
 
+  async needsHydrate(): Promise<boolean> {
+    const redisCount = await this.redis.count();
+    return redisCount === 0;
+  }
+
   async hydrate(): Promise<void> {
     const all = this.sqlite.getAll();
     for (const memory of all) {
@@ -40,11 +45,39 @@ export class SyncStorage {
     await this.redis.flush();
   }
 
+  getCoreMemories(): Memory[] {
+    return this.sqlite.getCoreMemories();
+  }
+
+  async incrementRecallCount(id: string): Promise<void> {
+    this.sqlite.incrementRecallCount(id);
+    await this.redis.incrementRecallCount(id).catch(() => {});
+  }
+
+  async setCore(id: string, isCore: boolean): Promise<void> {
+    this.sqlite.setCore(id, isCore);
+    await this.redis.setCore(id, isCore).catch(() => {});
+  }
+
+  async mergeMemory(id: string, content: string, embedding: number[]): Promise<void> {
+    const embeddingBuffer = Buffer.from(new Float32Array(embedding).buffer);
+    this.sqlite.mergeContent(id, content, embeddingBuffer);
+    await this.redis.updateContent(id, content, embedding).catch(() => {});
+  }
+
+  async deleteMemory(id: string): Promise<void> {
+    this.sqlite.deleteMemory(id);
+    await this.redis.delete(id).catch(() => {});
+  }
+
+  get sqliteDb(): SqliteStorage {
+    return this.sqlite;
+  }
+
   get search() {
     return {
       text: (query: string, limit?: number) => this.redis.searchText(query, limit),
       vector: (embedding: number[], limit?: number) => this.redis.searchVector(embedding, limit),
-      hybrid: (query: string, embedding: number[], limit?: number) => this.redis.searchHybrid(query, embedding, limit),
       count: () => this.redis.count(),
     };
   }
