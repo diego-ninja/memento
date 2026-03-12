@@ -98,21 +98,21 @@ export class SqliteStorage {
     const rows = this.db
       .prepare('SELECT * FROM memories WHERE project = ? ORDER BY timestamp DESC')
       .all(project) as any[];
-    return rows.map(this.rowToMemory);
+    return rows.map(r => this.rowToMemory(r));
   }
 
   getAll(): Memory[] {
     const rows = this.db
       .prepare('SELECT * FROM memories ORDER BY timestamp DESC')
       .all() as any[];
-    return rows.map(this.rowToMemory);
+    return rows.map(r => this.rowToMemory(r));
   }
 
   getCoreMemories(): Memory[] {
     const rows = this.db
       .prepare('SELECT * FROM memories WHERE is_core = 1 ORDER BY timestamp DESC')
       .all() as any[];
-    return rows.map(this.rowToMemory);
+    return rows.map(r => this.rowToMemory(r));
   }
 
   incrementRecallCount(id: string): void {
@@ -131,6 +131,84 @@ export class SqliteStorage {
     this.db
       .prepare('UPDATE memories SET content = ?, embedding = ?, timestamp = ? WHERE id = ?')
       .run(content, embeddingBuffer, Date.now(), id);
+  }
+
+  addEdge(sourceId: string, targetId: string, similarity: number): void {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO memory_edges (source_id, target_id, similarity)
+      VALUES (?, ?, ?)
+    `);
+    const insert = this.db.transaction(() => {
+      stmt.run(sourceId, targetId, similarity);
+      stmt.run(targetId, sourceId, similarity);
+    });
+    insert();
+  }
+
+  getNeighbors(memoryId: string): Memory[] {
+    const rows = this.db.prepare(`
+      SELECT m.* FROM memory_edges e
+      JOIN memories m ON m.id = e.target_id
+      WHERE e.source_id = ?
+      ORDER BY e.similarity DESC
+    `).all(memoryId) as any[];
+    return rows.map(r => this.rowToMemory(r));
+  }
+
+  getNeighborsWithSimilarity(memoryId: string): { memory: Memory; similarity: number }[] {
+    const rows = this.db.prepare(`
+      SELECT m.*, e.similarity FROM memory_edges e
+      JOIN memories m ON m.id = e.target_id
+      WHERE e.source_id = ?
+      ORDER BY e.similarity DESC
+    `).all(memoryId) as any[];
+    return rows.map((row: any) => ({
+      memory: this.rowToMemory(row),
+      similarity: row.similarity,
+    }));
+  }
+
+  getDegree(memoryId: string): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM memory_edges WHERE source_id = ?'
+    ).get(memoryId) as any;
+    return row?.cnt ?? 0;
+  }
+
+  getDegrees(memoryIds: string[]): Map<string, number> {
+    const result = new Map<string, number>();
+    if (memoryIds.length === 0) return result;
+
+    const placeholders = memoryIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT source_id, COUNT(*) as cnt
+      FROM memory_edges
+      WHERE source_id IN (${placeholders})
+      GROUP BY source_id
+    `).all(...memoryIds) as any[];
+
+    for (const id of memoryIds) result.set(id, 0);
+    for (const row of rows) result.set(row.source_id, row.cnt);
+    return result;
+  }
+
+  transferEdges(fromId: string, toId: string): void {
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE OR IGNORE memory_edges SET source_id = ? WHERE source_id = ? AND target_id != ?
+      `).run(toId, fromId, toId);
+      this.db.prepare(`
+        UPDATE OR IGNORE memory_edges SET target_id = ? WHERE target_id = ? AND source_id != ?
+      `).run(toId, fromId, toId);
+      this.db.prepare('DELETE FROM memory_edges WHERE source_id = ? OR target_id = ?').run(fromId, fromId);
+    })();
+  }
+
+  deleteMemory(id: string): void {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM memory_edges WHERE source_id = ? OR target_id = ?').run(id, id);
+      this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+    })();
   }
 
   close(): void {
