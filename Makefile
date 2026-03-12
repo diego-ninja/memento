@@ -1,71 +1,71 @@
-.PHONY: setup install-ollama start stop status build dev test clean
+.PHONY: help setup start stop status build dev test clean recall stats flush hydrate core maintain
+.DEFAULT_GOAL := help
 
-REDIS_PORT := 6380
+COMPOSE := docker compose
+CLI := node dist/cli.js
+
+help: ## Show available commands
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # ── Setup ───────────────────────────────────────────────
-setup: install-ollama
+setup: ## Install deps, start services, build
 	npm install
-	docker compose up -d
+	$(COMPOSE) up -d
+	npx tsc
 	@echo "✔ Memento setup complete. Run 'make start' to launch services."
 
-install-ollama:
-	@if ! command -v ollama &> /dev/null; then \
-		echo "Installing Ollama..."; \
-		brew install ollama; \
-	else \
-		echo "Ollama already installed"; \
-	fi
-	@echo "Pulling nomic-embed-text model..."
-	ollama pull nomic-embed-text
-
 # ── Services ────────────────────────────────────────────
-start:
-	@echo "Starting Redis Stack (docker)..."
-	@docker compose up -d
-	@echo "Starting Ollama..."
-	@ollama serve &>/dev/null & disown 2>/dev/null || echo "Ollama might already be running"
-	@sleep 1
+start: ## Start infrastructure (Redis + Ollama) + hydrate
+	@$(COMPOSE) up -d
 	@make status
+	@echo "Hydrating Redis..."
+	@$(CLI) hydrate 2>/dev/null || echo "Hydrate skipped (build first)"
 
-stop:
-	@echo "Stopping Redis (docker)..."
-	@docker compose down
-	@echo "Stopping Ollama..."
-	@pkill -f "ollama serve" 2>/dev/null || echo "Ollama not running"
+stop: ## Stop all services
+	@echo "Stopping services..."
+	@$(COMPOSE) down
 	@echo "Services stopped."
 
-status:
+status: ## Show service status
 	@echo "── Service Status ──"
-	@docker compose ps --format '{{.Service}}: {{.Status}}' 2>/dev/null | grep redis || echo "Redis:  ✘ stopped"
-	@curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo "Ollama: ✔ running" || echo "Ollama: ✘ stopped"
+	@$(COMPOSE) ps --format '{{.Service}}: {{.Status}}' 2>/dev/null || echo "No services running"
 	@echo ""
 
-# ── Build ───────────────────────────────────────────────
-build:
+# ── Build ──────────────────────────────────────────────
+build: ## Build TypeScript
 	npx tsc
 
-dev:
+dev: ## Watch mode
 	npx tsc --watch
 
 # ── Test ────────────────────────────────────────────────
-test:
+test: ## Run tests
 	npx vitest run
 
-test-watch:
+test-watch: ## Run tests in watch mode
 	npx vitest
 
 # ── Clean ───────────────────────────────────────────────
-clean:
+clean: ## Remove dist/
 	rm -rf dist/
 
-# ── Memento CLI ─────────────────────────────────────────
-recall:
-	@node dist/cli.js recall $(ARGS)
+# ── Memento CLI ────────────────────────────────────────
+recall: ## Recall memories (ARGS="query")
+	@$(CLI) recall $(ARGS)
 
-stats:
-	@node dist/cli.js stats
+stats: ## Show memory stats
+	@$(CLI) stats
 
-flush:
+hydrate: ## Hydrate Redis from SQLite
+	@$(CLI) hydrate
+
+core: ## Show core memories
+	@$(CLI) core
+
+maintain: ## Run maintenance (degrade stale core memories)
+	@$(CLI) maintain
+
+flush: ## Delete ALL memories
 	@echo "⚠ This will delete ALL memories. Press Ctrl+C to cancel."
 	@sleep 3
-	@node dist/cli.js flush
+	@$(CLI) flush
