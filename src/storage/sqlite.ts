@@ -26,19 +26,51 @@ export class SqliteStorage {
         embedding BLOB NOT NULL,
         session_id TEXT NOT NULL,
         supersedes TEXT,
+        is_core INTEGER NOT NULL DEFAULT 0,
+        recall_count INTEGER NOT NULL DEFAULT 0,
+        last_recalled INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
       CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
       CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
       CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_memories_is_core ON memories(is_core);
+
+      CREATE TABLE IF NOT EXISTS memory_edges (
+        source_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        similarity REAL NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (source_id, target_id),
+        FOREIGN KEY (source_id) REFERENCES memories(id),
+        FOREIGN KEY (target_id) REFERENCES memories(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id);
+      CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id);
     `);
+
+    // Migrate existing DBs: add new columns if missing
+    const columns = this.db.pragma('table_info(memories)') as any[];
+    const columnNames = columns.map((c: any) => c.name);
+
+    if (!columnNames.includes('is_core')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0');
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_memories_is_core ON memories(is_core)');
+    }
+    if (!columnNames.includes('recall_count')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columnNames.includes('last_recalled')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN last_recalled INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   store(memory: Memory): void {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO memories (id, timestamp, project, scope, type, content, tags, embedding, session_id, supersedes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO memories (id, timestamp, project, scope, type, content, tags, embedding, session_id, supersedes, is_core, recall_count, last_recalled)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       memory.id,
@@ -51,6 +83,9 @@ export class SqliteStorage {
       Buffer.from(new Float32Array(memory.embedding).buffer),
       memory.sessionId,
       memory.supersedes ?? null,
+      memory.isCore ? 1 : 0,
+      memory.recallCount,
+      memory.lastRecalled,
     );
   }
 
@@ -73,6 +108,31 @@ export class SqliteStorage {
     return rows.map(this.rowToMemory);
   }
 
+  getCoreMemories(): Memory[] {
+    const rows = this.db
+      .prepare('SELECT * FROM memories WHERE is_core = 1 ORDER BY timestamp DESC')
+      .all() as any[];
+    return rows.map(this.rowToMemory);
+  }
+
+  incrementRecallCount(id: string): void {
+    this.db
+      .prepare('UPDATE memories SET recall_count = recall_count + 1, last_recalled = ? WHERE id = ?')
+      .run(Date.now(), id);
+  }
+
+  setCore(id: string, isCore: boolean): void {
+    this.db
+      .prepare('UPDATE memories SET is_core = ? WHERE id = ?')
+      .run(isCore ? 1 : 0, id);
+  }
+
+  mergeContent(id: string, content: string, embeddingBuffer: Buffer): void {
+    this.db
+      .prepare('UPDATE memories SET content = ?, embedding = ?, timestamp = ? WHERE id = ?')
+      .run(content, embeddingBuffer, Date.now(), id);
+  }
+
   close(): void {
     this.db.close();
   }
@@ -92,6 +152,9 @@ export class SqliteStorage {
           : [],
       sessionId: row.session_id,
       supersedes: row.supersedes ?? undefined,
+      isCore: row.is_core === 1,
+      recallCount: row.recall_count ?? 0,
+      lastRecalled: row.last_recalled ?? 0,
     };
   }
 }
