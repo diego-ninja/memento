@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
-import { nanoid } from 'nanoid';
 import { loadConfig, ensureDataDirs, getProjectDbPath, getProjectId } from './config.js';
 import { SyncStorage } from './storage/sync.js';
 import { OllamaEmbeddings } from './embeddings/ollama.js';
@@ -171,25 +170,17 @@ async function handleExtract(config: any, projectPath: string, transcriptPath: s
   const sessionId = process.env.CLAUDE_SESSION_ID ?? 'extract';
   const projectId = getProjectId(projectPath);
 
-  for (const mem of extracted) {
-    const embedding = await embeddings.generate(mem.content);
-    await storage.store({
-      id: nanoid(),
-      timestamp: Date.now(),
-      project: projectId,
-      scope: 'project',
-      type: mem.type,
-      content: mem.content,
-      tags: [],
-      embedding,
-      sessionId,
-      isCore: false,
-      recallCount: 0,
-      lastRecalled: 0,
-    });
-  }
+  const { storeWithDedup } = await import('./storage/pipeline.js');
+  const result = await storeWithDedup(extracted, {
+    storage,
+    sqlite: storage.sqliteDb,
+    embeddings,
+    config,
+    projectId,
+    sessionId,
+  });
 
-  console.log(`Stored ${extracted.length} memories.`);
+  console.log(`Stored ${result.stored}, merged ${result.merged}, skipped ${result.deduplicated} dupes.`);
   await storage.disconnect();
 }
 
