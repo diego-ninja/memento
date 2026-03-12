@@ -226,6 +226,13 @@ export class RedisStorage {
 
   private rawHashToMemory(id: string, data: Record<string, any>): Memory {
     const str = (key: string) => (data[key] != null ? String(data[key]) : '');
+
+    let embedding: number[] = [];
+    const embField = data['embedding'];
+    if (embField && Buffer.isBuffer(embField) && embField.length > 0) {
+      embedding = Array.from(new Float32Array(new Uint8Array(embField).buffer));
+    }
+
     return {
       id,
       timestamp: Number(str('timestamp')),
@@ -234,7 +241,7 @@ export class RedisStorage {
       type: str('type') as Memory['type'],
       content: str('content'),
       tags: str('tags') ? str('tags').split(',') : [],
-      embedding: [],
+      embedding,
       sessionId: str('session_id'),
       supersedes: str('supersedes') || undefined,
       isCore: str('is_core') === '1',

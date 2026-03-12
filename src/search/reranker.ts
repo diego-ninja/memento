@@ -22,7 +22,11 @@ const TYPE_WEIGHTS: Record<MemoryType, number> = {
 const RECENCY_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class Reranker {
-  rerank(results: RecallResult[], finalK: number): RecallResult[] {
+  rerank(
+    results: RecallResult[],
+    finalK: number,
+    degrees?: Map<string, number>,
+  ): RecallResult[] {
     const supersededIds = new Set(
       results.map(r => r.memory.supersedes).filter(Boolean) as string[],
     );
@@ -34,7 +38,9 @@ export class Reranker {
       const age = now - r.memory.timestamp;
       const recencyBoost = Math.pow(0.5, age / RECENCY_HALF_LIFE_MS);
       const recallBoost = 1 + Math.sqrt(r.memory.recallCount) * 0.05;
-      const finalScore = r.score * typeWeight * (0.5 + 0.5 * recencyBoost) * recallBoost;
+      const degree = degrees?.get(r.memory.id) ?? 0;
+      const graphBoost = 1 + Math.log2(1 + degree) * 0.1;
+      const finalScore = r.score * typeWeight * (0.5 + 0.5 * recencyBoost) * recallBoost * graphBoost;
       return { ...r, score: finalScore };
     });
 
