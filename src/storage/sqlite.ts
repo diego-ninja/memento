@@ -14,6 +14,7 @@ export class SqliteStorage {
   }
 
   private migrate(): void {
+    // 1. Create tables (no-op if already exist)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -35,6 +36,24 @@ export class SqliteStorage {
       CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
       CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
       CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+    `);
+
+    // 2. Migrate existing DBs: add new columns if missing
+    const columns = this.db.pragma('table_info(memories)') as any[];
+    const columnNames = columns.map((c: any) => c.name);
+
+    if (!columnNames.includes('is_core')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columnNames.includes('recall_count')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columnNames.includes('last_recalled')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN last_recalled INTEGER NOT NULL DEFAULT 0');
+    }
+
+    // 3. Create indexes and tables that depend on migrated columns
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memories_is_core ON memories(is_core);
 
       CREATE TABLE IF NOT EXISTS memory_edges (
@@ -50,21 +69,6 @@ export class SqliteStorage {
       CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id);
       CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id);
     `);
-
-    // Migrate existing DBs: add new columns if missing
-    const columns = this.db.pragma('table_info(memories)') as any[];
-    const columnNames = columns.map((c: any) => c.name);
-
-    if (!columnNames.includes('is_core')) {
-      this.db.exec('ALTER TABLE memories ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0');
-      this.db.exec('CREATE INDEX IF NOT EXISTS idx_memories_is_core ON memories(is_core)');
-    }
-    if (!columnNames.includes('recall_count')) {
-      this.db.exec('ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!columnNames.includes('last_recalled')) {
-      this.db.exec('ALTER TABLE memories ADD COLUMN last_recalled INTEGER NOT NULL DEFAULT 0');
-    }
   }
 
   store(memory: Memory): void {
