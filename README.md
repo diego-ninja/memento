@@ -50,14 +50,14 @@ Session Start ──> inject core memories + recent session summaries
 ├──────────────────────────────────────────────────────────────┤
 │  Engine-Lite (hooks)                                         │
 │  real-time ingest + compaction awareness + context recovery   │
-└──────────────────────┬───────────────┬───────────────────────┘
-                  ┌────▼────┐    ┌─────▼─────┐
-                  │ SQLite  │    │   Redis   │
-                  │ (truth) │    │  (search) │
-                  └─────────┘    └───────────┘
+└──────────────────────────────────┬──────────────────────────┘
+                              ┌────▼────┐
+                              │ SQLite  │
+                              │  + vec  │
+                              └─────────┘
 ```
 
-**Storage:** Redis Stack (RediSearch + HNSW) for fast hybrid search. SQLite (WAL) as source of truth.
+**Storage:** SQLite (WAL mode) with [sqlite-vec](https://github.com/asg017/sqlite-vec) for HNSW vector search and FTS5 for full-text search. Single file per project, zero infrastructure.
 
 **Embeddings:** Ollama with `nomic-embed-text` (768-dim). Zero external API calls.
 
@@ -67,18 +67,18 @@ Session Start ──> inject core memories + recent session summaries
 
 - macOS (Apple Silicon recommended) or Linux
 - Node.js 20+
-- Docker
+- Docker (only for Ollama, or install Ollama natively)
 
 ## Quick Start
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/diego-ninja/memento.git
 cd memento
 
-# Install deps + start Docker containers + build + pull model
+# Install deps + start Ollama + build + pull models
 make setup
 
-# Start infrastructure
+# Start Ollama
 make start
 
 # Verify
@@ -86,12 +86,15 @@ make status
 make test
 ```
 
-### Infrastructure (Docker)
+### Infrastructure
 
-| Service     | Host Port | Purpose                      |
-|-------------|-----------|------------------------------|
-| Redis Stack | 6380      | Search engine (RediSearch + HNSW vectors) |
-| Ollama      | 11435     | Embeddings + summarization (local LLM)    |
+| Component   | Type        | Purpose                      |
+|-------------|-------------|------------------------------|
+| SQLite      | Embedded    | All storage (memories, transcripts, vectors, FTS) |
+| sqlite-vec  | Extension   | HNSW vector search           |
+| Ollama      | Docker/Native | Embeddings + summarization (local LLM) |
+
+Ollama runs as a Docker container on port 11435 by default. Alternatively, install Ollama natively and point `MEMENTO_OLLAMA_HOST` to it.
 
 ## Configure Claude Code
 
@@ -210,6 +213,7 @@ Call remember() immediately after:
 | `post-tool.sh` | PostToolUse | Real-time capture of tool calls (Read, Write, Bash, etc). |
 | `pre-compact.sh` | PreCompact | Generate checkpoint summary and inject as additionalContext (survives compaction). |
 | `post-compact.sh` | PostCompact | Capture Claude Code's compact_summary into the summary DAG. |
+| `subagent-stop.sh` | SubagentStop | Ingest sub-agent transcripts + persist final message in parent session. |
 | `session-end.sh` | SessionEnd | Batch ingest transcript + extract memories + detect artifacts + link sessions + build DAG. |
 
 ## Data Storage
@@ -219,7 +223,7 @@ Call remember() immediately after:
 ├── config.json                  # Optional config overrides
 └── projects/
     └── {sha256-hash}/
-        ├── memories.db          # Knowledge layer (memories + edges)
+        ├── memories.db          # Knowledge layer (memories + edges + vector index)
         └── transcripts.db       # Transcript layer (sessions, messages, summaries, artifacts)
 ```
 
@@ -228,6 +232,8 @@ Call remember() immediately after:
 | Table | Purpose |
 |-------|---------|
 | `memories` | Distilled knowledge: decisions, learnings, preferences, facts |
+| `memories_fts` | FTS5 full-text search index |
+| `vec_memories` | sqlite-vec HNSW vector index (768-dim embeddings) |
 | `memory_edges` | Semantic graph: bidirectional edges between related memories |
 
 ### Transcript Layer (transcripts.db)
@@ -262,7 +268,6 @@ Call remember() immediately after:
 | `stats` | Show memory count |
 | `core` | List core memories |
 | `maintain` | Degrade stale core memories (>30 days) |
-| `hydrate` | Reload Redis from SQLite |
 | `extract <transcript>` | Extract memories from a transcript file |
 | `flush` | Delete all memories |
 
@@ -305,9 +310,7 @@ src/
 │   ├── session-edges.ts        # Cross-session edge detection
 │   └── tokens.ts               # Token estimator
 ├── storage/
-│   ├── sqlite.ts               # SQLite storage (knowledge)
-│   ├── redis.ts                # Redis storage with RediSearch
-│   ├── sync.ts                 # Dual-write coordinator
+│   ├── unified.ts              # UnifiedStorage (SQLite + sqlite-vec + FTS5)
 │   └── pipeline.ts             # Shared dedup/merge pipeline
 ├── search/
 │   ├── hybrid.ts               # Hybrid text+vector search (RRF fusion)
@@ -331,7 +334,6 @@ Default config (override via `~/.memento/config.json`):
 
 ```json
 {
-  "redis": { "host": "127.0.0.1", "port": 6380 },
   "ollama": {
     "host": "http://127.0.0.1:11435",
     "embeddingModel": "nomic-embed-text",
