@@ -1,65 +1,103 @@
 # Memento
 
-Transparent, persistent memory for LLMs. Designed for Claude via Claude Code.
+Persistent memory system for LLMs with lossless transcript management. Designed for Claude via Claude Code.
 
-Memento gives Claude long-term memory across sessions. It automatically extracts decisions, learnings, preferences, and context from your conversations, stores them in a fast searchable index, and retrieves relevant memories when Claude needs them. The user never interacts with Memento directly -- Claude uses it autonomously.
+Memento operates as an **engine-lite**: a two-layer memory system that captures everything and forgets nothing. The **knowledge layer** stores distilled facts, decisions, and preferences. The **transcript layer** stores full session history with a hierarchical summary DAG, enabling regex search and lossless drill-down across all past conversations.
+
+Inspired by the [Lossless Context Management (LCM)](https://papers.voltropy.com/LCM) architecture.
 
 ## How It Works
 
 ```
-Session Start   -->  Hook recalls relevant memories  -->  Claude has context
-During Session  -->  Claude calls recall/remember as needed
-Pre-Compact     -->  Hook extracts session summary before context is lost
-Session End     -->  Hook persists remaining memories (safety net)
+Session Start ──> inject core memories + recent session summaries
+                  (if resuming after compaction: inject recovery context)
+                       │
+                       ▼
+  ┌──────────── TURN LOOP ─────────────┐
+  │ UserPromptSubmit ──> persist user    │
+  │ PostToolUse ────────> persist tools  │
+  │ Stop ───────────────> persist reply  │
+  └──────────────────────────────────────┘
+                       │
+              [context fills up]
+                       │
+  PreCompact ──> generate checkpoint summary ──> inject as context
+  PostCompact ─> capture Claude's compact_summary
+  SessionStart(compact) ──> inject rich recovery context
+                       │
+  Session End ──> batch ingest full transcript
+                  extract knowledge memories
+                  detect file artifacts
+                  link related sessions
+                  build summary DAG (async)
 ```
 
-**Storage:** Redis Stack (RediSearch) for fast hybrid text+vector search. SQLite for durable persistence.
+## Architecture
 
-**Embeddings:** Ollama running locally with `nomic-embed-text`. Zero external API calls.
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    MCP Tools (7)                              │
+│  recall · remember · transcript_grep · transcript_expand     │
+│  transcript_describe · llm_map                               │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
+│  Knowledge Layer                                             │
+│  memories + edges + dedup + merge + diversify                │
+├──────────────────────────────────────────────────────────────┤
+│  Transcript Layer                                            │
+│  sessions + messages + FTS5 + summary DAG + artifacts        │
+├──────────────────────────────────────────────────────────────┤
+│  Engine-Lite (hooks)                                         │
+│  real-time ingest + compaction awareness + context recovery   │
+└──────────────────────┬───────────────┬───────────────────────┘
+                  ┌────▼────┐    ┌─────▼─────┐
+                  │ SQLite  │    │   Redis   │
+                  │ (truth) │    │  (search) │
+                  └─────────┘    └───────────┘
+```
 
-**Integration:** MCP Server for Claude Code tools + hooks for automatic lifecycle events.
+**Storage:** Redis Stack (RediSearch + HNSW) for fast hybrid search. SQLite (WAL) as source of truth.
+
+**Embeddings:** Ollama with `nomic-embed-text` (768-dim). Zero external API calls.
+
+**Summarization:** Ollama with `qwen2.5:3b` for summaries and extraction. Three-level escalation guarantees convergence (LLM -> bullet points -> deterministic truncate).
 
 ## Requirements
 
-- macOS (Apple Silicon recommended)
+- macOS (Apple Silicon recommended) or Linux
 - Node.js 20+
 - Docker
 
 ## Quick Start
 
 ```bash
-# Clone and setup
 git clone <repo-url>
 cd memento
 
-# Install npm deps + pull Ollama model + start Docker containers
+# Install deps + start Docker containers + build + pull model
 make setup
 
-# Start services (Redis Stack on :6380, Ollama on :11435)
+# Start infrastructure
 make start
 
-# Build TypeScript
-make build
-
-# Verify everything is running
+# Verify
 make status
-
-# Run tests
 make test
 ```
 
-Both Redis Stack and Ollama run as Docker containers managed via `docker-compose.yml`:
+### Infrastructure (Docker)
 
-| Service     | Host Port | Container Port |
-|-------------|-----------|----------------|
-| Redis Stack | 6380      | 6379           |
-| Ollama      | 11435     | 11434          |
+| Service     | Host Port | Purpose                      |
+|-------------|-----------|------------------------------|
+| Redis Stack | 6380      | Search engine (RediSearch + HNSW vectors) |
+| Ollama      | 11435     | Embeddings + summarization (local LLM)    |
 
 ## Configure Claude Code
 
-### 1. Global settings
+### 1. MCP Server
 
-Add to your **global** Claude Code settings (`~/.claude/settings.json`):
+Add to your project's `.claude/settings.json`:
 
 ```json
 {
@@ -67,212 +105,250 @@ Add to your **global** Claude Code settings (`~/.claude/settings.json`):
     "memento": {
       "command": "node",
       "args": ["dist/server.js"],
-      "cwd": "/Users/diego/Code/Viterbit/memento"
+      "cwd": "/path/to/memento"
     }
-  },
+  }
+}
+```
+
+### 2. Hooks
+
+Add to your **global** `~/.claude/settings.json`:
+
+```json
+{
   "hooks": {
     "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/diego/Code/Viterbit/memento/hooks/session-start.sh",
-            "timeout": 10
-          }
-        ]
-      }
+      { "matcher": "startup", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/session-start.sh", "timeout": 10 }] },
+      { "matcher": "compact", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/session-start.sh", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/user-prompt.sh", "timeout": 3 }] }
+    ],
+    "Stop": [
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/stop.sh", "timeout": 3 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/post-tool.sh", "timeout": 3 }] }
     ],
     "PreCompact": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/diego/Code/Viterbit/memento/hooks/pre-compact.sh",
-            "timeout": 15
-          }
-        ]
-      }
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/pre-compact.sh", "timeout": 15 }] }
+    ],
+    "PostCompact": [
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/post-compact.sh", "timeout": 5 }] }
     ],
     "SessionEnd": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/diego/Code/Viterbit/memento/hooks/session-end.sh",
-            "timeout": 5
-          }
-        ]
-      }
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "/path/to/memento/hooks/session-end.sh", "timeout": 30 }] }
     ]
   }
 }
 ```
 
-### 2. CLAUDE.md instructions
+### 3. CLAUDE.md instructions
 
-Add the following to your **global** `~/.claude/CLAUDE.md` so Claude knows how to use Memento:
+Add to your **global** `~/.claude/CLAUDE.md`:
 
 ```markdown
 # Memento -- Persistent Memory
 
 You have access to a persistent memory system via MCP (memento).
 Use it transparently -- the user should NOT notice you are consulting
-or storing memories. Do not mention "memento" or "I checked my memory"
-unless directly asked.
+or storing memories.
 
 ## When to recall (automatic)
 
-Always recall from memento when:
-- Starting a new session (the pre-init hook loads context,
-  but do an additional recall if the user raises a specific topic)
-- About to make an architectural or design decision
-- The user mentions something "we already discussed" or "like last time"
+- Starting a new session (hooks load context, but recall for specific topics)
+- Before architectural or design decisions
+- When the user references something "we discussed" or "last time"
 - Unsure about a user preference
-- Working on a module/area not touched in this session
 
-Do NOT recall for:
-- Trivial questions or greetings
-- Mechanical tasks where context is obvious
-- Information already in the current conversation
+## When to remember
 
-## When to remember-extract (intra-session)
-
-Call remember_extract() immediately after:
+Call remember() immediately after:
 - Completing a brainstorming or design session
-- Writing or validating a design document (docs/plans/*.md)
-- Writing or validating an implementation plan
-- User approving a plan mode (ExitPlanMode accepted)
-- Completing a code review with relevant feedback
+- Writing or validating a design document
+- User approving a plan
 - Solving a complex bug with reusable learnings
 
-## Recall format
+## Transcript tools
 
-Formulate queries as natural language:
-- "What architecture decisions were made for module X?"
-- "What preferences does Diego have about testing?"
-- "What problems were found with Redis in this project?"
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `make setup` | Install Ollama + model, start Docker containers, install npm deps |
-| `make install-ollama` | Install only Ollama + pull nomic-embed-text model |
-| `make start` | Start Redis Stack + Ollama (Docker) |
-| `make stop` | Stop all services |
-| `make status` | Check service status |
-| `make build` | Build TypeScript |
-| `make dev` | Build in watch mode |
-| `make test` | Run tests |
-| `make test-watch` | Run tests in watch mode |
-| `make recall ARGS="query"` | Manual memory search |
-| `make stats` | Show memory count |
-| `make flush` | Delete all memories (with confirmation) |
-| `make clean` | Remove build artifacts |
-
-## Architecture
-
-```
-Claude Code Session
-|-- Hooks (automatic)
-|   |-- SessionStart  ->  recall context  ->  inject as additionalContext
-|   |-- PreCompact    ->  extract session summary  ->  store
-|   +-- SessionEnd    ->  extract remaining memories  ->  store (safety net)
-+-- MCP Server (Claude-driven)
-    |-- recall            ->  hybrid search (text + vector)  ->  rerank  ->  top-5
-    |-- remember          ->  deduplicate  ->  dual-write (Redis + SQLite)
-    +-- remember_extract  ->  extraction prompt  ->  Claude calls remember
-
-Storage
-|-- Redis Stack (RediSearch)  --  search engine, HNSW vector index, full-text
-+-- SQLite (WAL mode)         --  durable persistence, source of truth
-
-Embeddings
-+-- Ollama (nomic-embed-text)  --  768-dim vectors, local, zero API cost
+- transcript_grep(pattern) — search full session history across all sessions
+- transcript_expand(id) — drill into any summary to see original messages
+- transcript_describe(id) — quick metadata for sessions, summaries, artifacts
 ```
 
 ## MCP Tools
 
-### `recall`
+### Knowledge Layer
 
-Search persistent memory for relevant decisions, learnings, preferences, and context.
-
-**Parameters:**
-- `query` (string, required) -- Natural language query
-- `type` (enum, optional) -- Filter by memory type
-- `limit` (number, optional) -- Max results (default: 5)
-
-### `remember`
-
-Store one or more memories for future recall. Includes automatic deduplication (cosine similarity > 0.92 is skipped) and superseding (similarity > 0.80 links to the older memory).
-
-**Parameters:**
-- `memories` (array, required) -- Each with `type`, `content`, `tags`, and optional `scope`
-
-### `remember_extract`
-
-Trigger memory extraction from the current conversation. Returns a structured prompt that instructs Claude to analyze the conversation and call `remember` with extracted memories.
-
-**Parameters:**
-- `scope` (enum, required) -- `full` for entire conversation, `partial` for recent block
-- `context` (string, optional) -- Description of the block to extract from
-
-## Memory Types
-
-| Type | When Stored |
+| Tool | Description |
 |------|-------------|
-| `decision` | Architectural or design choices with reasoning |
-| `learning` | Bugs resolved, patterns discovered, techniques learned |
-| `preference` | User preferences expressed or inferred |
-| `context` | Session summaries, what was worked on |
-| `fact` | Non-obvious facts about the codebase |
+| `recall` | Hybrid text+vector search over distilled memories. Returns top-3 with graph-based diversity. |
+| `remember` | Store memories with automatic dedup (>0.92 skip), merge (0.80-0.92), and graph edge creation. |
+
+### Transcript Layer
+
+| Tool | Description |
+|------|-------------|
+| `transcript_grep` | Substring/FTS5 search across all past session transcripts. Filter by session, role, limit. |
+| `transcript_expand` | Lossless drill-down: summary ID, session ID, or message ID -> original messages with context. |
+| `transcript_describe` | Metadata inspection for sessions (with artifacts, linked sessions), summaries, messages. |
+
+### Operators
+
+| Tool | Description |
+|------|-------------|
+| `llm_map` | Process N items in parallel with a prompt template. Configurable concurrency and retries. |
+
+## Hooks
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `session-start.sh` | SessionStart (startup/compact) | Inject core memories + session summaries. Post-compact: inject recovery context. |
+| `user-prompt.sh` | UserPromptSubmit | Real-time capture of user prompts to immutable store. |
+| `stop.sh` | Stop | Real-time capture of assistant responses. |
+| `post-tool.sh` | PostToolUse | Real-time capture of tool calls (Read, Write, Bash, etc). |
+| `pre-compact.sh` | PreCompact | Generate checkpoint summary and inject as additionalContext (survives compaction). |
+| `post-compact.sh` | PostCompact | Capture Claude Code's compact_summary into the summary DAG. |
+| `session-end.sh` | SessionEnd | Batch ingest transcript + extract memories + detect artifacts + link sessions + build DAG. |
 
 ## Data Storage
 
-Memories are dual-written to both Redis and SQLite. On startup, Redis is hydrated from SQLite to rebuild the search index.
-
 ```
 ~/.memento/
-|-- config.json              # Optional config overrides
-|-- global.db                # Global memories (preferences, cross-project)
-+-- projects/
-    +-- {sha256-hash}/
-        +-- memories.db      # Per-project memories
+├── config.json                  # Optional config overrides
+└── projects/
+    └── {sha256-hash}/
+        ├── memories.db          # Knowledge layer (memories + edges)
+        └── transcripts.db       # Transcript layer (sessions, messages, summaries, artifacts)
 ```
 
-- **Redis Stack** -- All memories loaded into RediSearch for fast hybrid search (<10ms). Uses HNSW index for vector similarity and full-text index for keyword search. Runs in Docker on port **6380**.
-- **SQLite** -- Write-ahead log (WAL) mode. Source of truth. Survives Redis restarts -- data is rehydrated automatically.
+### Knowledge Layer (memories.db)
+
+| Table | Purpose |
+|-------|---------|
+| `memories` | Distilled knowledge: decisions, learnings, preferences, facts |
+| `memory_edges` | Semantic graph: bidirectional edges between related memories |
+
+### Transcript Layer (transcripts.db)
+
+| Table | Purpose |
+|-------|---------|
+| `sessions` | Session metadata with root summary pointer |
+| `messages` | Immutable verbatim transcript (every message, every turn) |
+| `messages_fts` | FTS5 virtual table for full-text search |
+| `summaries` | Hierarchical DAG nodes (leaf, condensed, compact_capture) |
+| `summary_sources` | DAG edges: summary -> messages/summaries (provenance) |
+| `artifacts` | Tracked file references with exploration summaries |
+| `session_edges` | Cross-session links (continuation, related) |
+
+## Memory Types
+
+| Type | Purpose |
+|------|---------|
+| `decision` | Architectural or design choices |
+| `learning` | Bugs resolved, patterns discovered |
+| `preference` | User preferences expressed or inferred |
+| `context` | Session summaries, work context |
+| `fact` | Non-obvious codebase facts |
+
+## CLI Commands
+
+### Knowledge
+
+| Command | Description |
+|---------|-------------|
+| `recall <query>` | Search memories |
+| `stats` | Show memory count |
+| `core` | List core memories |
+| `maintain` | Degrade stale core memories (>30 days) |
+| `hydrate` | Reload Redis from SQLite |
+| `extract <transcript>` | Extract memories from a transcript file |
+| `flush` | Delete all memories |
+
+### Transcript
+
+| Command | Description |
+|---------|-------------|
+| `sessions --recent N` | List recent sessions with summaries |
+| `ingest-message --session <id> --role <role> --content <text>` | Persist a single message (used by hooks) |
+| `ingest-transcript --session <id> --path <file>` | Batch ingest a full JSONL transcript |
+| `build-dag --session <id>` | Build hierarchical summary DAG |
+| `checkpoint --session <id>` | Generate session checkpoint for pre-compact |
+| `session-summary --session <id>` | Get root summary of a session |
+| `store-compact-summary --session <id> --summary <text>` | Store Claude's compact_summary |
+| `detect-artifacts --session <id>` | Find and store file artifacts |
+| `link-sessions` | Create edges between related sessions |
 
 ## Project Structure
 
 ```
 src/
-|-- server.ts                # MCP server entry point
-|-- cli.ts                   # CLI for hooks and manual use
-|-- config.ts                # Configuration and project ID hashing
-|-- types.ts                 # Core type definitions
-|-- tools/
-|   |-- recall.ts            # recall tool
-|   |-- remember.ts          # remember tool (with deduplication)
-|   +-- remember-extract.ts  # remember_extract tool
-|-- storage/
-|   |-- sqlite.ts            # SQLite storage layer
-|   |-- redis.ts             # Redis storage with RediSearch
-|   +-- sync.ts              # Dual-write sync coordinator
-|-- search/
-|   |-- hybrid.ts            # Hybrid text+vector search
-|   +-- reranker.ts          # Recency + type-weight reranker
-+-- embeddings/
-    +-- ollama.ts            # Ollama embedding client
+├── server.ts                   # MCP server entry point (7 tools)
+├── cli.ts                      # CLI for hooks and manual use
+├── config.ts                   # Configuration + project paths
+├── types.ts                    # Core type definitions
+├── extract.ts                  # Transcript extraction (LLM + regex)
+├── tools/
+│   ├── recall.ts               # Knowledge recall with graph boost + diversify
+│   ├── remember.ts             # Knowledge store with dedup pipeline
+│   ├── transcript-grep.ts      # Regex/FTS search over transcripts
+│   ├── transcript-expand.ts    # Lossless summary -> message drill-down
+│   ├── transcript-describe.ts  # Metadata inspection
+│   └── llm-map.ts              # Parallel batch processing operator
+├── transcript/
+│   ├── db.ts                   # TranscriptDb (SQLite: sessions, messages, summaries, artifacts, edges)
+│   ├── parse.ts                # Claude Code JSONL transcript parser
+│   ├── ingest.ts               # Single message + batch transcript ingestion
+│   ├── summarize.ts            # Three-level escalation + DAG construction
+│   ├── artifacts.ts            # File artifact detection + exploration summaries
+│   ├── session-edges.ts        # Cross-session edge detection
+│   └── tokens.ts               # Token estimator
+├── storage/
+│   ├── sqlite.ts               # SQLite storage (knowledge)
+│   ├── redis.ts                # Redis storage with RediSearch
+│   ├── sync.ts                 # Dual-write coordinator
+│   └── pipeline.ts             # Shared dedup/merge pipeline
+├── search/
+│   ├── hybrid.ts               # Hybrid text+vector search (RRF fusion)
+│   └── reranker.ts             # Recency + type weight + graph degree ranking
+└── embeddings/
+    └── ollama.ts               # Ollama client (embeddings + merge + summarize)
 
 hooks/
-|-- session-start.sh         # Inject memories on session start
-|-- pre-compact.sh           # Extract summary before compaction
-+-- session-end.sh           # Safety net extraction on session end
+├── session-start.sh            # Startup + post-compact recovery
+├── user-prompt.sh              # Real-time user prompt capture
+├── stop.sh                     # Real-time assistant response capture
+├── post-tool.sh                # Real-time tool call capture
+├── pre-compact.sh              # Checkpoint summary injection
+├── post-compact.sh             # Compact summary capture
+└── session-end.sh              # Final ingest + extract + DAG + artifacts + edges
+```
+
+## Configuration
+
+Default config (override via `~/.memento/config.json`):
+
+```json
+{
+  "redis": { "host": "127.0.0.1", "port": 6380 },
+  "ollama": {
+    "host": "http://127.0.0.1:11435",
+    "embeddingModel": "nomic-embed-text",
+    "generativeModel": "qwen2.5:3b"
+  },
+  "search": {
+    "topK": 20,
+    "finalK": 3,
+    "deduplicationThreshold": 0.92,
+    "mergeThreshold": 0.80,
+    "rrfK": 60
+  },
+  "core": {
+    "promoteAfterRecalls": 3,
+    "degradeAfterSessions": 30
+  }
+}
 ```
 
 ## License
