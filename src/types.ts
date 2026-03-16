@@ -39,10 +39,6 @@ export interface RecallQuery {
 
 export interface MementoConfig {
   dataDir: string;
-  redis: {
-    host: string;
-    port: number;
-  };
   ollama: {
     host: string;
     embeddingModel: string;

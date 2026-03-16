@@ -1,10 +1,10 @@
-import type { SyncStorage } from '../storage/sync.js';
+import type { UnifiedStorage } from '../storage/unified.js';
 import type { OllamaEmbeddings } from '../embeddings/ollama.js';
 import type { Memory, RecallQuery, RecallResult } from '../types.js';
 
 export class HybridSearch {
   constructor(
-    private storage: SyncStorage,
+    private storage: UnifiedStorage,
     private embeddings: OllamaEmbeddings,
     private rrfK: number = 60,
   ) {}
@@ -14,8 +14,8 @@ export class HybridSearch {
     const limit = query.limit ?? 20;
 
     const [textResults, vectorResults] = await Promise.all([
-      this.storage.search.text(query.query, limit).catch(() => [] as Memory[]),
-      this.storage.search.vector(embedding, limit).catch(() => [] as Memory[]),
+      Promise.resolve(this.storage.searchText(query.query, limit)).catch(() => [] as Memory[]),
+      Promise.resolve(this.storage.searchVector(embedding, limit)).catch(() => [] as Memory[]),
     ]);
 
     return rrfFuse(textResults, vectorResults, this.rrfK);

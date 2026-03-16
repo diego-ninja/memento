@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig, ensureDataDirs, getProjectDbPath, getTranscriptDbPath } from './config.js';
 import { checkDependencies } from './health.js';
-import { SyncStorage } from './storage/sync.js';
+import { UnifiedStorage } from './storage/unified.js';
 import { OllamaEmbeddings } from './embeddings/ollama.js';
 import { HybridSearch } from './search/hybrid.js';
 import { Reranker } from './search/reranker.js';
@@ -19,31 +19,20 @@ import { registerLlmMapTool } from './tools/llm-map.js';
 async function main() {
   const config = loadConfig();
 
-  // Fail fast if dependencies are unavailable
+  // Fail fast if Ollama is unavailable
   await checkDependencies(config);
 
   const projectPath = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-
   ensureDataDirs(projectPath);
 
-  const projectStorage = new SyncStorage(
-    config.redis,
-    getProjectDbPath(projectPath),
-    'memento',
-  );
-  await projectStorage.connect();
-
-  // Lazy hydrate: only if Redis is empty
-  const needsHydrate = await projectStorage.needsHydrate();
-  if (needsHydrate) {
-    projectStorage.hydrate().catch(console.error);
-  }
+  // Knowledge layer — unified SQLite storage
+  const storage = new UnifiedStorage(getProjectDbPath(projectPath));
 
   const embeddings = new OllamaEmbeddings({
     host: config.ollama.host,
     model: config.ollama.embeddingModel,
   });
-  const search = new HybridSearch(projectStorage, embeddings, config.search.rrfK);
+  const search = new HybridSearch(storage, embeddings, config.search.rrfK);
   const reranker = new Reranker();
 
   const mergeWithLLM = async (old: string, new_: string) => {
@@ -59,8 +48,8 @@ async function main() {
   });
 
   // Knowledge layer tools
-  registerRecallTool(server, search, reranker, projectStorage, config);
-  registerRememberTool(server, projectStorage, embeddings, config, projectPath, mergeWithLLM);
+  registerRecallTool(server, search, reranker, storage, config);
+  registerRememberTool(server, storage, embeddings, config, projectPath, mergeWithLLM);
 
   // Transcript layer tools
   registerTranscriptGrepTool(server, transcriptDb);

@@ -1,6 +1,5 @@
 import { nanoid } from 'nanoid';
-import type { SyncStorage } from './sync.js';
-import type { SqliteStorage } from './sqlite.js';
+import type { UnifiedStorage } from './unified.js';
 import type { OllamaEmbeddings } from '../embeddings/ollama.js';
 import type { MementoConfig, Memory, MemoryType } from '../types.js';
 
@@ -17,8 +16,7 @@ export interface StoreResult {
 }
 
 export interface PipelineDeps {
-  storage: SyncStorage;
-  sqlite: SqliteStorage;
+  storage: UnifiedStorage;
   embeddings: OllamaEmbeddings;
   config: MementoConfig;
   projectId: string;
@@ -41,13 +39,12 @@ export async function storeWithDedup(
   inputs: StoreInput[],
   deps: PipelineDeps,
 ): Promise<StoreResult> {
-  const { storage, sqlite, embeddings, config, projectId, sessionId, mergeWithLLM } = deps;
+  const { storage, embeddings, config, projectId, sessionId, mergeWithLLM } = deps;
 
   let stored = 0;
   let merged = 0;
   let deduplicated = 0;
 
-  // 1. Batch generate embeddings
   const contents = inputs.map(m => m.content);
   const allEmbeddings = inputs.length === 1
     ? [await embeddings.generate(contents[0])]
@@ -57,8 +54,7 @@ export async function storeWithDedup(
     const input = inputs[i];
     const embedding = allEmbeddings[i];
 
-    // 2. Vector search top-10 for dedup + edge building
-    const existing = await storage.search.vector(embedding, 10);
+    const existing = storage.searchVector(embedding, 10);
 
     let bestMatch: { memory: Memory; similarity: number } | undefined;
 
@@ -76,46 +72,41 @@ export async function storeWithDedup(
     }
 
     if (bestMatch) {
-      // 3. Similarity > 0.92 → deduplicate
       if (bestMatch.similarity > config.search.deduplicationThreshold) {
         deduplicated++;
         continue;
       }
 
-      // 4. Similarity 0.80-0.92 → store + edge + background merge
       if (bestMatch.similarity > config.search.mergeThreshold) {
         const newMemory = createMemory(input, embedding, projectId, sessionId);
-        await storage.store(newMemory);
-        sqlite.addEdge(newMemory.id, bestMatch.memory.id, bestMatch.similarity);
+        storage.store(newMemory);
+        storage.addEdge(newMemory.id, bestMatch.memory.id, bestMatch.similarity);
 
-        // Fire-and-forget background merge
         if (mergeWithLLM) {
-          backgroundMerge(bestMatch.memory, newMemory, storage, sqlite, embeddings, mergeWithLLM);
+          backgroundMerge(bestMatch.memory, newMemory, storage, embeddings, mergeWithLLM);
         }
 
         stored++;
-        buildEdgesSync(newMemory.id, embedding, existing, bestMatch.memory.id, sqlite, config);
+        buildEdgesSync(newMemory.id, embedding, existing, bestMatch.memory.id, storage, config);
         continue;
       }
 
-      // 5. Similarity 0.70-0.80 → store + edge (related but distinct)
       if (bestMatch.similarity > 0.70) {
         const newMemory = createMemory(input, embedding, projectId, sessionId);
-        await storage.store(newMemory);
-        sqlite.addEdge(newMemory.id, bestMatch.memory.id, bestMatch.similarity);
+        storage.store(newMemory);
+        storage.addEdge(newMemory.id, bestMatch.memory.id, bestMatch.similarity);
         stored++;
-        buildEdgesSync(newMemory.id, embedding, existing, bestMatch.memory.id, sqlite, config);
+        buildEdgesSync(newMemory.id, embedding, existing, bestMatch.memory.id, storage, config);
         continue;
       }
     }
 
-    // 6. No match or similarity < 0.70 → store new
     const newMemory = createMemory(input, embedding, projectId, sessionId);
-    await storage.store(newMemory);
+    storage.store(newMemory);
     stored++;
 
     if (existing.length > 0) {
-      buildEdgesSync(newMemory.id, embedding, existing, undefined, sqlite, config);
+      buildEdgesSync(newMemory.id, embedding, existing, undefined, storage, config);
     }
   }
 
@@ -149,7 +140,7 @@ function buildEdgesSync(
   newEmbedding: number[],
   candidates: Memory[],
   alreadyLinked: string | undefined,
-  sqlite: SqliteStorage,
+  storage: UnifiedStorage,
   config: MementoConfig,
 ): void {
   for (const candidate of candidates) {
@@ -158,7 +149,7 @@ function buildEdgesSync(
 
     const sim = cosineSimilarity(newEmbedding, candidate.embedding);
     if (sim > 0.70 && sim < config.search.deduplicationThreshold) {
-      sqlite.addEdge(newId, candidate.id, sim);
+      storage.addEdge(newId, candidate.id, sim);
     }
   }
 }
@@ -166,16 +157,15 @@ function buildEdgesSync(
 function backgroundMerge(
   oldMemory: Memory,
   newMemory: Memory,
-  storage: SyncStorage,
-  sqlite: SqliteStorage,
+  storage: UnifiedStorage,
   embeddings: OllamaEmbeddings,
   mergeWithLLM: (old: string, new_: string) => Promise<string>,
 ): void {
   Promise.resolve().then(async () => {
     const mergedContent = await mergeWithLLM(oldMemory.content, newMemory.content);
     const mergedEmbedding = await embeddings.generate(mergedContent);
-    await storage.mergeMemory(newMemory.id, mergedContent, mergedEmbedding);
-    sqlite.transferEdges(oldMemory.id, newMemory.id);
-    await storage.deleteMemory(oldMemory.id);
+    storage.mergeContent(newMemory.id, mergedContent, mergedEmbedding);
+    storage.transferEdges(oldMemory.id, newMemory.id);
+    storage.deleteMemory(oldMemory.id);
   }).catch(console.error);
 }

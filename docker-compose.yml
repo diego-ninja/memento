@@ -1,16 +1,4 @@
 services:
-  redis:
-    image: redis/redis-stack-server:latest
-    ports:
-      - "6380:6379"
-    volumes:
-      - memento-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -32,5 +20,4 @@ services:
     entrypoint: ["sh", "-c", "OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text && OLLAMA_HOST=http://ollama:11434 ollama pull qwen2.5:3b"]
 
 volumes:
-  memento-redis:
   memento-ollama:

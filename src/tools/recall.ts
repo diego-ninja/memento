@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { HybridSearch } from '../search/hybrid.js';
 import type { Reranker } from '../search/reranker.js';
-import type { SyncStorage } from '../storage/sync.js';
+import type { UnifiedStorage } from '../storage/unified.js';
 import type { MementoConfig, RecallResult } from '../types.js';
 
 const TYPE_CHAR: Record<string, string> = {
@@ -13,7 +13,7 @@ export function registerRecallTool(
   server: McpServer,
   search: HybridSearch,
   reranker: Reranker,
-  storage: SyncStorage,
+  storage: UnifiedStorage,
   config: MementoConfig,
 ): void {
   server.tool(
@@ -36,7 +36,7 @@ export function registerRecallTool(
 
       // Get degrees for graph boost
       const ids = results.map(r => r.memory.id);
-      const degrees = storage.sqliteDb.getDegrees(ids);
+      const degrees = storage.getDegrees(ids);
 
       const ranked = reranker.rerank(results, (limit ?? config.search.finalK) * 3, degrees);
       const diversified = reranker.diversify(ranked, limit ?? config.search.finalK);
@@ -47,17 +47,17 @@ export function registerRecallTool(
 
       // Fire-and-forget: increment recall counts + auto-promote
       for (const r of diversified) {
-        storage.incrementRecallCount(r.memory.id).then(() => {
+        try {
+          storage.incrementRecallCount(r.memory.id);
           const newCount = r.memory.recallCount + 1;
           if (!r.memory.isCore && newCount >= config.core.promoteAfterRecalls) {
             storage.setCore(r.memory.id, true);
           }
-          // Auto-promote by degree
           const degree = degrees.get(r.memory.id) ?? 0;
           if (!r.memory.isCore && degree >= 10) {
             storage.setCore(r.memory.id, true);
           }
-        }).catch(() => {});
+        } catch {}
       }
 
       // Build related section from graph
@@ -73,8 +73,8 @@ export function registerRecallTool(
   );
 }
 
-function handleExpand(shortId: string, storage: SyncStorage) {
-  const neighbors = storage.sqliteDb.getNeighborsWithSimilarity(shortId);
+function handleExpand(shortId: string, storage: UnifiedStorage) {
+  const neighbors = storage.getNeighborsWithSimilarity(shortId);
 
   if (neighbors.length === 0) {
     return { content: [{ type: 'text' as const, text: `No neighbors for ${shortId}.` }] };
@@ -106,17 +106,17 @@ function formatCompact(results: (RecallResult & { relatedCount?: number })[]): s
 
 function buildRelatedSection(
   results: RecallResult[],
-  storage: SyncStorage,
+  storage: UnifiedStorage,
 ): string {
   const shown = new Set(results.map(r => r.memory.id));
   const relatedLines: string[] = [];
 
   for (const r of results) {
-    const neighbors = storage.sqliteDb.getNeighbors(r.memory.id);
+    const neighbors = storage.getNeighbors(r.memory.id);
     for (const n of neighbors) {
       if (shown.has(n.id)) continue;
       shown.add(n.id);
-      const degree = storage.sqliteDb.getDegree(n.id);
+      const degree = storage.getDegree(n.id);
       const shortId = n.id.slice(0, 6);
       const truncated = n.content.length > 60 ? n.content.slice(0, 60) + '...' : n.content;
       relatedLines.push(`[${shortId}] ${truncated} (${degree} connections)`);

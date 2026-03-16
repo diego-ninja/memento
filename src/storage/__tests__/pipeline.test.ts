@@ -4,18 +4,12 @@ import { storeWithDedup, type StoreInput, type PipelineDeps } from '../pipeline.
 function mockDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
   return {
     storage: {
-      store: vi.fn().mockResolvedValue(undefined),
-      search: {
-        vector: vi.fn().mockResolvedValue([]),
-      },
-      mergeMemory: vi.fn().mockResolvedValue(undefined),
-      deleteMemory: vi.fn().mockResolvedValue(undefined),
-    } as any,
-    sqlite: {
-      addEdge: vi.fn(),
-      getDegree: vi.fn().mockReturnValue(0),
-      transferEdges: vi.fn(),
+      store: vi.fn(),
+      searchVector: vi.fn().mockReturnValue([]),
+      mergeContent: vi.fn(),
       deleteMemory: vi.fn(),
+      addEdge: vi.fn(),
+      transferEdges: vi.fn(),
     } as any,
     embeddings: {
       generate: vi.fn().mockResolvedValue(new Array(768).fill(0.1)),
@@ -37,7 +31,7 @@ function mockDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
 describe('storeWithDedup', () => {
   it('should store new memory when no similar exists', async () => {
     const deps = mockDeps();
-    const inputs: StoreInput[] = [{ type: 'decision', content: 'use Redis for search' }];
+    const inputs: StoreInput[] = [{ type: 'decision', content: 'use SQLite for search' }];
 
     const result = await storeWithDedup(inputs, deps);
 
@@ -56,29 +50,29 @@ describe('storeWithDedup', () => {
       } as any,
       storage: {
         store: vi.fn(),
-        search: {
-          vector: vi.fn().mockResolvedValue([{
-            id: 'existing',
-            content: 'use Redis for search',
-            embedding, // same embedding = similarity 1.0
-            type: 'decision',
-            timestamp: Date.now(),
-            project: 'test',
-            scope: 'project',
-            tags: [],
-            sessionId: 'old',
-            isCore: false,
-            recallCount: 0,
-            lastRecalled: 0,
-          }]),
-        },
-        mergeMemory: vi.fn(),
+        searchVector: vi.fn().mockReturnValue([{
+          id: 'existing',
+          content: 'use SQLite for search',
+          embedding,
+          type: 'decision',
+          timestamp: Date.now(),
+          project: 'test',
+          scope: 'project',
+          tags: [],
+          sessionId: 'old',
+          isCore: false,
+          recallCount: 0,
+          lastRecalled: 0,
+        }]),
+        mergeContent: vi.fn(),
         deleteMemory: vi.fn(),
+        addEdge: vi.fn(),
+        transferEdges: vi.fn(),
       } as any,
     });
 
     const result = await storeWithDedup(
-      [{ type: 'decision', content: 'use Redis for search' }],
+      [{ type: 'decision', content: 'use SQLite for search' }],
       deps,
     );
 

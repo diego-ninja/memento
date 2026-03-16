@@ -1,5 +1,5 @@
 .PHONY: help setup start stop status build dev test clean
-.PHONY: recall stats hydrate core maintain flush
+.PHONY: recall stats core maintain flush
 .PHONY: sessions ingest-transcript build-dag detect-artifacts link-sessions
 .DEFAULT_GOAL := help
 
@@ -19,10 +19,9 @@ setup: ## Install deps, start infrastructure, build, pull model
 	@echo "Done. Run 'make start' to verify."
 
 # ── Infrastructure ─────────────────────────────────────
-start: ## Start Redis + Ollama (Docker) and hydrate Redis
+start: ## Start Ollama (Docker)
 	@$(COMPOSE) up -d
 	@make status
-	@$(CLI) hydrate 2>/dev/null || echo "Hydrate skipped (run 'make build' first)"
 
 stop: ## Stop infrastructure
 	@$(COMPOSE) down
@@ -57,9 +56,6 @@ core: ## Show core memories
 
 maintain: ## Degrade stale core memories
 	@$(CLI) maintain
-
-hydrate: ## Reload Redis search index from SQLite
-	@$(CLI) hydrate
 
 flush: ## Delete ALL memories (with confirmation)
 	@echo "This will delete ALL memories. Press Ctrl+C to cancel."

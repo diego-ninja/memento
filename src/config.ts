@@ -8,10 +8,6 @@ const MEMENTO_DIR = process.env.MEMENTO_DATA_DIR ?? path.join(os.homedir(), '.me
 
 const DEFAULT_CONFIG: MementoConfig = {
   dataDir: MEMENTO_DIR,
-  redis: {
-    host: process.env.MEMENTO_REDIS_HOST ?? '127.0.0.1',
-    port: Number(process.env.MEMENTO_REDIS_PORT ?? 6380),
-  },
   ollama: {
     host: process.env.MEMENTO_OLLAMA_HOST ?? 'http://127.0.0.1:11435',
     embeddingModel: 'nomic-embed-text',
