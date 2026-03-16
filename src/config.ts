@@ -4,23 +4,34 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { MementoConfig } from './types.js';
 
-const MEMENTO_DIR = path.join(os.homedir(), '.memento');
+const MEMENTO_DIR = process.env.MEMENTO_DATA_DIR ?? path.join(os.homedir(), '.memento');
 
 const DEFAULT_CONFIG: MementoConfig = {
   dataDir: MEMENTO_DIR,
   redis: {
-    host: '127.0.0.1',
-    port: 6380,
+    host: process.env.MEMENTO_REDIS_HOST ?? '127.0.0.1',
+    port: Number(process.env.MEMENTO_REDIS_PORT ?? 6380),
   },
   ollama: {
-    host: 'http://127.0.0.1:11435',
-    model: 'nomic-embed-text',
+    host: process.env.MEMENTO_OLLAMA_HOST ?? 'http://127.0.0.1:11435',
+    embeddingModel: 'nomic-embed-text',
+    generativeModel: 'qwen2.5:3b',
   },
   search: {
     topK: 20,
-    finalK: 5,
+    finalK: 3,
     deduplicationThreshold: 0.92,
-    supersededThreshold: 0.80,
+    mergeThreshold: 0.80,
+    rrfK: 60,
+  },
+  core: {
+    promoteAfterRecalls: 3,
+    degradeAfterSessions: 30,
+  },
+  extraction: {
+    provider: 'ollama',
+    ollama: { model: 'qwen2.5:3b' },
+    anthropic: { model: 'claude-haiku-4-5-20251001' },
   },
 };
 
@@ -40,6 +51,11 @@ export function getProjectId(projectPath: string): string {
 export function getProjectDbPath(projectPath: string): string {
   const projectId = getProjectId(projectPath);
   return path.join(MEMENTO_DIR, 'projects', projectId, 'memories.db');
+}
+
+export function getTranscriptDbPath(projectPath: string): string {
+  const projectId = getProjectId(projectPath);
+  return path.join(MEMENTO_DIR, 'projects', projectId, 'transcripts.db');
 }
 
 export function getGlobalDbPath(): string {

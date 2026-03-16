@@ -18,10 +18,18 @@ services:
     volumes:
       - memento-ollama:/root/.ollama
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["sh", "-c", "OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text && OLLAMA_HOST=http://ollama:11434 ollama pull qwen2.5:3b"]
 
 volumes:
   memento-redis:

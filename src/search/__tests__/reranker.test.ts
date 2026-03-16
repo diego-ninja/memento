@@ -38,6 +38,17 @@ describe('Reranker', () => {
     expect(ranked.find(r => r.memory.id === 'old-dec')).toBeUndefined();
   });
 
+  it('boosts frequently recalled memories', () => {
+    const now = Date.now();
+    const results: RecallResult[] = [
+      makeResult('rarely', 0.5, now, 'fact', 0),
+      makeResult('often', 0.5, now, 'fact', 10),
+    ];
+
+    const ranked = reranker.rerank(results, 5);
+    expect(ranked[0].memory.id).toBe('often');
+  });
+
   it('limits output to finalK', () => {
     const results = Array.from({ length: 20 }, (_, i) =>
       makeResult(`m-${i}`, 0.5 + Math.random() * 0.5, Date.now()),
@@ -48,13 +59,14 @@ describe('Reranker', () => {
   });
 });
 
-function makeResult(id: string, score: number, timestamp: number, type: string = 'fact'): RecallResult {
+function makeResult(id: string, score: number, timestamp: number, type: string = 'fact', recallCount: number = 0): RecallResult {
   return {
     memory: {
       id, timestamp, project: 'test', scope: 'project',
       type: type as any, content: `Memory ${id}`,
       tags: [], embedding: [], sessionId: 'test',
+      isCore: false, recallCount, lastRecalled: 0,
     },
-    score, source: 'hybrid',
+    score, source: 'rrf',
   };
 }

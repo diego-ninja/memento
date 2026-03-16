@@ -12,19 +12,21 @@ export interface Memory {
   embedding: number[];
   sessionId: string;
   supersedes?: string;
+  isCore: boolean;
+  recallCount: number;
+  lastRecalled: number;
 }
 
 export interface MemoryInput {
   type: MemoryType;
   content: string;
-  tags: string[];
-  scope?: MemoryScope;
+  core?: boolean;
 }
 
 export interface RecallResult {
   memory: Memory;
   score: number;
-  source: 'text' | 'vector' | 'hybrid';
+  source: 'text' | 'vector' | 'rrf';
 }
 
 export interface RecallQuery {
@@ -35,10 +37,6 @@ export interface RecallQuery {
   limit?: number;
 }
 
-export interface ExtractResult {
-  memories: MemoryInput[];
-}
-
 export interface MementoConfig {
   dataDir: string;
   redis: {
@@ -47,12 +45,23 @@ export interface MementoConfig {
   };
   ollama: {
     host: string;
-    model: string;
+    embeddingModel: string;
+    generativeModel: string;
   };
   search: {
     topK: number;
     finalK: number;
     deduplicationThreshold: number;
-    supersededThreshold: number;
+    mergeThreshold: number;
+    rrfK: number;
+  };
+  core: {
+    promoteAfterRecalls: number;
+    degradeAfterSessions: number;
+  };
+  extraction: {
+    provider: 'ollama' | 'anthropic';
+    ollama: { model: string };
+    anthropic: { model: string };
   };
 }

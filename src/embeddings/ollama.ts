@@ -24,4 +24,13 @@ export class OllamaEmbeddings {
     });
     return response.embeddings;
   }
+
+  async merge(oldContent: string, newContent: string, model: string): Promise<string> {
+    const response = await this.client.generate({
+      model,
+      prompt: `Merge these two memory notes into one concise telegraphic note. No articles, no filler. Keep all unique facts.\n\nOld: ${oldContent}\nNew: ${newContent}\n\nMerged:`,
+      stream: false,
+    });
+    return response.response.trim();
+  }
 }
